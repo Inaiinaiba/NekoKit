@@ -4,11 +4,13 @@ from astrbot.api.star import StarTools
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
+from dataclasses import dataclass, field
 
-from tools import KVStoreTool
-from core import ToolResult
+from .tools import KVStoreTool
+from .core import ToolResult
 
 
+@dataclass
 class KVStoreFunctionTool(FunctionTool[AstrAgentContext]):
     """AstrBot 函数工具包装器 - 适配 AstrBot 的 FunctionTool 接口"""
     name: str = "kv_store"
@@ -16,7 +18,7 @@ class KVStoreFunctionTool(FunctionTool[AstrAgentContext]):
         "键值存储工具，用于持久化保存和读取数据。默认开启 AI 隔离，"
         "每个 AI 只能访问自己存储的数据。支持会话隔离模式。"
     )
-    parameters: dict = {
+    parameters: dict = field(default_factory=lambda: {
         "type": "object",
         "properties": {
             "action": {
@@ -35,16 +37,14 @@ class KVStoreFunctionTool(FunctionTool[AstrAgentContext]):
             "session_scope": {
                 "type": "boolean",
                 "description": "是否为会话隔离模式：true=仅当前会话可见，false=当前 AI 所有会话可见（默认 false）",
-                "default": False,
             },
             "ai_isolation": {
                 "type": "boolean",
                 "description": "是否启用 AI 隔离：true=仅当前 AI 可访问（默认 true），false=所有 AI 共享",
-                "default": True,
             },
         },
         "required": ["action"],
-    }
+    })
 
     _kv_tool: KVStoreTool = None
 
