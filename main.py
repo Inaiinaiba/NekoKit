@@ -1,8 +1,10 @@
+import json
+
 from astrbot.api import logger
 from astrbot.api import star
 from astrbot.api.star import StarTools
 from astrbot.api import AstrBotConfig
-from astrbot.core.agent.tool import FunctionTool, ToolExecResult
+from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
 from dataclasses import dataclass, field
@@ -37,20 +39,20 @@ class KVGetTool(FunctionTool[AstrAgentContext]):
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
-    ) -> ToolExecResult:
+    ) -> str:
         if not self._kv_tool:
-            return ToolExecResult(error="KVStoreTool 未初始化")
+            return "KVStoreTool 未初始化"
 
         self._kv_tool.set_context(context)
         try:
             result: ToolResult = await self._kv_tool.execute(action="get", **kwargs)
             if result.success:
-                return ToolExecResult(result=result.to_dict())
+                return json.dumps(result.to_dict(), ensure_ascii=False)
             else:
-                return ToolExecResult(error=result.message)
+                return result.message
         except Exception as e:
             logger.error(f"[KVGetTool] 执行失败: {e}")
-            return ToolExecResult(error=f"执行失败: {str(e)}")
+            return f"执行失败: {str(e)}"
 
 
 @dataclass
@@ -83,20 +85,20 @@ class KVSetTool(FunctionTool[AstrAgentContext]):
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
-    ) -> ToolExecResult:
+    ) -> str:
         if not self._kv_tool:
-            return ToolExecResult(error="KVStoreTool 未初始化")
+            return "KVStoreTool 未初始化"
 
         self._kv_tool.set_context(context)
         try:
             result: ToolResult = await self._kv_tool.execute(action="set", **kwargs)
             if result.success:
-                return ToolExecResult(result=result.to_dict())
+                return result.message
             else:
-                return ToolExecResult(error=result.message)
+                return result.message
         except Exception as e:
             logger.error(f"[KVSetTool] 执行失败: {e}")
-            return ToolExecResult(error=f"执行失败: {str(e)}")
+            return f"执行失败: {str(e)}"
 
 
 @dataclass
@@ -125,20 +127,20 @@ class KVDeleteTool(FunctionTool[AstrAgentContext]):
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
-    ) -> ToolExecResult:
+    ) -> str:
         if not self._kv_tool:
-            return ToolExecResult(error="KVStoreTool 未初始化")
+            return "KVStoreTool 未初始化"
 
         self._kv_tool.set_context(context)
         try:
             result: ToolResult = await self._kv_tool.execute(action="delete", **kwargs)
             if result.success:
-                return ToolExecResult(result=result.to_dict())
+                return result.message
             else:
-                return ToolExecResult(error=result.message)
+                return result.message
         except Exception as e:
             logger.error(f"[KVDeleteTool] 执行失败: {e}")
-            return ToolExecResult(error=f"执行失败: {str(e)}")
+            return f"执行失败: {str(e)}"
 
 
 @dataclass
@@ -161,20 +163,20 @@ class KVListTool(FunctionTool[AstrAgentContext]):
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
-    ) -> ToolExecResult:
+    ) -> str:
         if not self._kv_tool:
-            return ToolExecResult(error="KVStoreTool 未初始化")
+            return "KVStoreTool 未初始化"
 
         self._kv_tool.set_context(context)
         try:
             result: ToolResult = await self._kv_tool.execute(action="list", **kwargs)
             if result.success:
-                return ToolExecResult(result=result.to_dict())
+                return json.dumps(result.to_dict(), ensure_ascii=False)
             else:
-                return ToolExecResult(error=result.message)
+                return result.message
         except Exception as e:
             logger.error(f"[KVListTool] 执行失败: {e}")
-            return ToolExecResult(error=f"执行失败: {str(e)}")
+            return f"执行失败: {str(e)}"
 
 
 class Main(star.Star):
