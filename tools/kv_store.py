@@ -41,11 +41,20 @@ class KVStoreTool(BaseTool):
         self._storage: Optional[StorageBackend] = None
         self._namespace_strategy: NamespaceStrategy = DefaultNamespaceStrategy()
         self._context: Optional[ContextWrapper[AstrAgentContext]] = None
+        self._config = {
+            "ai_isolation": True,
+            "session_scope": False
+        }
     
-    def initialize(self, data_dir: str, use_sqlite: bool = False) -> None:
-        """初始化工具"""
-        self._storage = create_storage_backend(data_dir, use_sqlite)
+    def initialize(self, data_dir: str) -> None:
+        """初始化工具，统一使用 SQLite"""
+        self._storage = create_storage_backend(data_dir)
         logger.info(f"[KVStoreTool] 已初始化，数据目录: {data_dir}")
+    
+    def set_config(self, config: Dict[str, Any]) -> None:
+        """设置配置"""
+        self._config.update(config)
+        logger.info(f"[KVStoreTool] 配置已更新: {self._config}")
     
     def get_name(self) -> str:
         return "kv_store"
@@ -73,16 +82,6 @@ class KVStoreTool(BaseTool):
                     "type": "string",
                     "description": "值（set 操作需要），可以是任意 JSON 兼容的数据",
                 },
-                "session_scope": {
-                    "type": "boolean",
-                    "description": "是否为会话隔离模式：true=仅当前会话可见，false=当前 AI 所有会话可见（默认 false）",
-                    "default": False,
-                },
-                "ai_isolation": {
-                    "type": "boolean",
-                    "description": "是否启用 AI 隔离：true=仅当前 AI 可访问（默认 true），false=所有 AI 共享",
-                    "default": True,
-                },
             },
             "required": ["action"],
         }
@@ -106,7 +105,6 @@ class KVStoreTool(BaseTool):
                 message="必须指定操作类型"
             )
         
-        # 获取上下文信息
         ai_id = "default_ai"
         session_id = "default_session"
         if self._context:
@@ -119,15 +117,14 @@ class KVStoreTool(BaseTool):
             except Exception as e:
                 logger.warning(f"[KVStoreTool] 获取会话 ID 失败: {e}")
         
-        # 构建命名空间
-        ai_isolation = kwargs.get("ai_isolation", True)
-        session_scope = kwargs.get("session_scope", False)
+        ai_isolation = self._config.get("ai_isolation", True)
+        session_scope = self._config.get("session_scope", False)
+        
         namespace = self._namespace_strategy.build(
             ai_id=ai_id if ai_isolation else None,
             session_id=session_id if session_scope else None,
         )
         
-        # 执行具体操作
         return await self._handle_action(action, kwargs, namespace, 
                                          ai_isolation, session_scope, ai_id, session_id)
     
@@ -190,7 +187,6 @@ class KVStoreTool(BaseTool):
                 message="设置数据需要提供值"
             )
         
-        # 尝试解析 JSON
         try:
             if isinstance(value, str):
                 parsed_value = json.loads(value)

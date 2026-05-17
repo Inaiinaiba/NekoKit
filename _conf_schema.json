@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "NekoKit Configuration",
+  "type": "object",
+  "properties": {
+    "kvstore": {
+      "title": "KV 存储工具",
+      "type": "object",
+      "properties": {
+        "ai_isolation": {
+          "title": "AI 隔离",
+          "type": "boolean",
+          "default": true,
+          "description": "启用后，每个 AI 只能访问自己存储的数据"
+        },
+        "session_scope": {
+          "title": "会话隔离",
+          "type": "boolean",
+          "default": false,
+          "description": "启用后，数据仅在当前会话内可见"
+        }
+      },
+      "description": "KV 存储工具的配置选项"
+    }
+  },
+  "default": {}
+}

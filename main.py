@@ -11,69 +11,168 @@ from .core import ToolResult
 
 
 @dataclass
-class KVStoreFunctionTool(FunctionTool[AstrAgentContext]):
-    """AstrBot 函数工具包装器 - 适配 AstrBot 的 FunctionTool 接口"""
-    name: str = "kv_store"
-    description: str = (
-        "键值存储工具，用于持久化保存和读取数据。默认开启 AI 隔离，"
-        "每个 AI 只能访问自己存储的数据。支持会话隔离模式。"
-    )
+class KVGetTool(FunctionTool[AstrAgentContext]):
+    """获取键值对"""
+    name: str = "get_kv"
+    description: str = "根据键名获取存储的值"
     parameters: dict = field(default_factory=lambda: {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "description": "操作类型：get(读取)、set(写入)、delete(删除)、list(列出键)、search(搜索)",
-                "enum": ["get", "set", "delete", "list", "search"],
-            },
             "key": {
                 "type": "string",
-                "description": "键名，用于唯一标识数据（get、set、delete、search 操作需要）",
-            },
-            "value": {
-                "type": "string",
-                "description": "值（set 操作需要），可以是任意 JSON 兼容的数据",
-            },
-            "session_scope": {
-                "type": "boolean",
-                "description": "是否为会话隔离模式：true=仅当前会话可见，false=当前 AI 所有会话可见（默认 false）",
-            },
-            "ai_isolation": {
-                "type": "boolean",
-                "description": "是否启用 AI 隔离：true=仅当前 AI 可访问（默认 true），false=所有 AI 共享",
+                "description": "要获取的键名",
             },
         },
-        "required": ["action"],
+        "required": ["key"],
     })
 
     _kv_tool: KVStoreTool = None
 
     @classmethod
-    def create_with_tool(cls, kv_tool: KVStoreTool) -> "KVStoreFunctionTool":
-        """工厂方法：创建绑定了 KVStoreTool 的实例"""
-        wrapper = cls()
-        wrapper._kv_tool = kv_tool
-        return wrapper
+    def create_with_tool(cls, kv_tool: KVStoreTool) -> "KVGetTool":
+        tool = cls()
+        tool._kv_tool = kv_tool
+        return tool
 
     async def call(
         self, context: ContextWrapper[AstrAgentContext], **kwargs
     ) -> ToolExecResult:
         if not self._kv_tool:
             return ToolExecResult(error="KVStoreTool 未初始化")
-
-        # 设置上下文
+        
         self._kv_tool.set_context(context)
-
-        # 执行工具
         try:
-            result: ToolResult = await self._kv_tool.execute(**kwargs)
-            # 转换为 AstrBot 的 ToolExecResult
+            result: ToolResult = await self._kv_tool.execute(action="get", **kwargs)
             if result.success:
                 return ToolExecResult(result=result.to_dict())
             else:
                 return ToolExecResult(error=result.message)
         except Exception as e:
-            logger.error(f"[KVStoreFunctionTool] 执行失败: {e}")
+            logger.error(f"[KVGetTool] 执行失败: {e}")
+            return ToolExecResult(error=f"执行失败: {str(e)}")
+
+
+@dataclass
+class KVSetTool(FunctionTool[AstrAgentContext]):
+    """设置键值对"""
+    name: str = "set_kv"
+    description: str = "设置或更新键值对"
+    parameters: dict = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "键名",
+            },
+            "value": {
+                "type": "string",
+                "description": "值，可以是任意 JSON 兼容的数据",
+            },
+        },
+        "required": ["key", "value"],
+    })
+
+    _kv_tool: KVStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, kv_tool: KVStoreTool) -> "KVSetTool":
+        tool = cls()
+        tool._kv_tool = kv_tool
+        return tool
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if not self._kv_tool:
+            return ToolExecResult(error="KVStoreTool 未初始化")
+        
+        self._kv_tool.set_context(context)
+        try:
+            result: ToolResult = await self._kv_tool.execute(action="set", **kwargs)
+            if result.success:
+                return ToolExecResult(result=result.to_dict())
+            else:
+                return ToolExecResult(error=result.message)
+        except Exception as e:
+            logger.error(f"[KVSetTool] 执行失败: {e}")
+            return ToolExecResult(error=f"执行失败: {str(e)}")
+
+
+@dataclass
+class KVDeleteTool(FunctionTool[AstrAgentContext]):
+    """删除键值对"""
+    name: str = "delete_kv"
+    description: str = "根据键名删除存储的值"
+    parameters: dict = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {
+            "key": {
+                "type": "string",
+                "description": "要删除的键名",
+            },
+        },
+        "required": ["key"],
+    })
+
+    _kv_tool: KVStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, kv_tool: KVStoreTool) -> "KVDeleteTool":
+        tool = cls()
+        tool._kv_tool = kv_tool
+        return tool
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if not self._kv_tool:
+            return ToolExecResult(error="KVStoreTool 未初始化")
+        
+        self._kv_tool.set_context(context)
+        try:
+            result: ToolResult = await self._kv_tool.execute(action="delete", **kwargs)
+            if result.success:
+                return ToolExecResult(result=result.to_dict())
+            else:
+                return ToolExecResult(error=result.message)
+        except Exception as e:
+            logger.error(f"[KVDeleteTool] 执行失败: {e}")
+            return ToolExecResult(error=f"执行失败: {str(e)}")
+
+
+@dataclass
+class KVListTool(FunctionTool[AstrAgentContext]):
+    """列出所有键"""
+    name: str = "list_kv"
+    description: str = "列出当前作用域下的所有键"
+    parameters: dict = field(default_factory=lambda: {
+        "type": "object",
+        "properties": {},
+    })
+
+    _kv_tool: KVStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, kv_tool: KVStoreTool) -> "KVListTool":
+        tool = cls()
+        tool._kv_tool = kv_tool
+        return tool
+
+    async def call(
+        self, context: ContextWrapper[AstrAgentContext], **kwargs
+    ) -> ToolExecResult:
+        if not self._kv_tool:
+            return ToolExecResult(error="KVStoreTool 未初始化")
+        
+        self._kv_tool.set_context(context)
+        try:
+            result: ToolResult = await self._kv_tool.execute(action="list", **kwargs)
+            if result.success:
+                return ToolExecResult(result=result.to_dict())
+            else:
+                return ToolExecResult(error=result.message)
+        except Exception as e:
+            logger.error(f"[KVListTool] 执行失败: {e}")
             return ToolExecResult(error=f"执行失败: {str(e)}")
 
 
@@ -84,21 +183,37 @@ class Main(star.Star):
         super().__init__(context)
         self.context = context
 
-        # 初始化数据目录
         self.data_dir = str(StarTools.get_data_dir("nekokit"))
 
-        # 初始化 KV 存储工具
         self._kv_tool = KVStoreTool()
-        self._kv_tool.initialize(self.data_dir, use_sqlite=False)
+        self._kv_tool.initialize(self.data_dir)
 
-        # 创建 AstrBot 函数工具包装器并注册
-        self._func_tool = KVStoreFunctionTool.create_with_tool(self._kv_tool)
-        self.context.add_llm_tools(self._func_tool)
+        self._load_config()
 
-        logger.info("[NekoKit] 插件已加载，已注册 kv_store 工具")
+        self._register_tools()
+
+        logger.info("[NekoKit] 插件已加载，已注册 KV 存储工具")
+
+    def _load_config(self):
+        """加载配置"""
+        try:
+            config = self.context.get_config()
+            kvstore_config = config.get("kvstore", {})
+            self._kv_tool.set_config(kvstore_config)
+        except Exception as e:
+            logger.warning(f"[NekoKit] 加载配置失败，使用默认配置: {e}")
+
+    def _register_tools(self):
+        """注册工具"""
+        tools = [
+            KVGetTool.create_with_tool(self._kv_tool),
+            KVSetTool.create_with_tool(self._kv_tool),
+            KVDeleteTool.create_with_tool(self._kv_tool),
+            KVListTool.create_with_tool(self._kv_tool),
+        ]
+        self.context.add_llm_tools(*tools)
 
     async def terminate(self):
         """插件卸载时调用，清理资源"""
         if hasattr(self, "_kv_tool") and self._kv_tool:
             logger.info("[NekoKit] 插件卸载，清理资源")
-
