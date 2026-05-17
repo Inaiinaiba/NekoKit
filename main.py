@@ -96,3 +96,9 @@ class Main(star.Star):
         self.context.add_llm_tools(self._func_tool)
 
         logger.info("[NekoKit] 插件已加载，已注册 kv_store 工具")
+
+    async def terminate(self):
+        """插件卸载时调用，清理资源"""
+        if hasattr(self, "_kv_tool") and self._kv_tool:
+            logger.info("[NekoKit] 插件卸载，清理资源")
+

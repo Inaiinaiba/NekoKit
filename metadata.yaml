@@ -2,3 +2,6 @@ name: nekokit
 author: gky
 desc: NekoKit - AstrBot 工具仓库，提供各种实用工具（包括 KV 存储等）
 version: 0.0.1
+short_desc: AstrBot 工具仓库，为 AI 提供 KV 存储等实用工具
+display_name: NekoKit 🐱
+astrbot_version: ">=4.16,<5"
