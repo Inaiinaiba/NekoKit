@@ -113,7 +113,11 @@ class CacheTool(BaseTool):
             return ToolResult(success=True, message="缓存未命中", data={"hit": False})
 
         try:
-            entry = json.loads(result.data.get("value", "{}"))
+            raw_value = result.data.get("value", "{}")
+            if isinstance(raw_value, dict):
+                entry = raw_value
+            else:
+                entry = json.loads(raw_value)
         except (json.JSONDecodeError, AttributeError):
             return ToolResult(success=True, message="缓存未命中", data={"hit": False})
 

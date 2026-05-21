@@ -1,7 +1,7 @@
 name: NekoKit
 author: gky
 desc: "NekoKit - AstrBot 工具仓库，提供 KV 存储和图片识别等实用工具"
-version: 0.0.6
+version: 0.0.6.1
 short_desc: "AstrBot 工具仓库，为 AI 提供 KV 存储和图片识别等实用工具"
 display_name: NekoKit
 repo: https://github.com/Inaiinaiba/NekoKit.git

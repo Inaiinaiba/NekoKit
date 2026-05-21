@@ -183,7 +183,8 @@ class ImageContextManager:
             result = await self._kv_tool.execute(action="get", key=key)
             if result.success:
                 try:
-                    data = json.loads(result.data.get("value", "{}"))
+                    raw = result.data.get("value", "{}")
+                    data = raw if isinstance(raw, dict) else json.loads(raw)
                     ctx = ImageContext.from_dict(data)
                     for k in ctx.knowledge:
                         if k.source == source and (not keyword or keyword in k.content):
@@ -213,7 +214,8 @@ class ImageContextManager:
         if not result.success:
             return None
         try:
-            data = json.loads(result.data.get("value", "{}"))
+            raw = result.data.get("value", "{}")
+            data = raw if isinstance(raw, dict) else json.loads(raw)
             ctx = ImageContext.from_dict(data)
             if self._is_expired(ctx):
                 await self._kv_tool.execute(action="delete", key=cache_key)
@@ -239,7 +241,8 @@ class ImageContextManager:
         result = await self._kv_tool.execute(action="get", key=cache_key)
         if result.success:
             try:
-                data = json.loads(result.data.get("value", "{}"))
+                raw = result.data.get("value", "{}")
+                data = raw if isinstance(raw, dict) else json.loads(raw)
                 return ImageContext.from_dict(data)
             except (json.JSONDecodeError, AttributeError):
                 pass
