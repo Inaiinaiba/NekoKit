@@ -87,6 +87,9 @@ def _resolve_image_local_path(event, image_path: str) -> str:
     path = _image_url_to_local_path(image_path).strip()
     if not path:
         raise ValueError("图片路径为空")
+
+    # Absolute path access is governed by AstrBot/runtime filesystem permissions.
+    # This helper only resolves relative paths against the current workspace.
     if os.path.isabs(path):
         return path
 
@@ -116,13 +119,7 @@ async def _collect_image_url(
         if parsed.scheme in ("http", "https"):
             return image, None
         try:
-            if not event and not os.path.isabs(_image_url_to_local_path(image)):
-                raise ValueError("无法获取当前会话 workspace，不能使用相对图片路径")
-            path = (
-                _resolve_image_local_path(event, image)
-                if event
-                else _image_url_to_local_path(image)
-            )
+            path = _resolve_image_local_path(event, image)
             if not os.path.isfile(path):
                 raise FileNotFoundError("图片文件不存在")
             return path, None
