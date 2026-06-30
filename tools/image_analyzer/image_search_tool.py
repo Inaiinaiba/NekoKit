@@ -164,7 +164,11 @@ class ImageSearchTool(BaseTool):
             "properties": {
                 "image_url": {
                     "type": "string",
-                    "description": "图片 URL 或本地文件路径",
+                    "description": (
+                        "Image URL or local path, e.g. https://example.com/a.png or "
+                        "/AstrBot/data/temp/a.png. The value can be an http/https "
+                        "URL or a local path."
+                    ),
                 },
                 "scene": {
                     "type": "string",

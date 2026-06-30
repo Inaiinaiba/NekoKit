@@ -1,13 +1,20 @@
 import json
+import os
+import re
 
 from astrbot.api import logger
 from astrbot.api import star
 from astrbot.api.star import StarTools
 from astrbot.api import AstrBotConfig
+from astrbot.api.message_components import Image, Reply
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional, Tuple
+from urllib.parse import unquote, urlparse
 
 from .tools import KVStoreTool
 from .tools.image_analyzer import (
@@ -22,6 +29,132 @@ from .tools.image_analyzer import (
 )
 from .tools.image_analyzer.angel_memory_bridge import AngelMemoryBridge
 from .core import ToolResult
+
+
+IMAGE_URL_DESCRIPTION = (
+    'Image URL or local path, e.g. "https://example.com/a.png" or '
+    '"/AstrBot/data/temp/a.png". The value can be an http/https URL or a local '
+    "path. Local paths support AstrBot temp directory files and non-sandbox "
+    "workspace files. AstrBot temp directory paths usually contain data/temp; "
+    "files retrieved from the sandbox with astrbot_download_file are automatically "
+    "placed in the temp directory."
+)
+
+
+def _parse_image_url(image_url: Any) -> str:
+    if not image_url:
+        return ""
+    if isinstance(image_url, (list, tuple, dict)):
+        raise ValueError("image_url 只接受单个图片 URL 或路径")
+
+    image = str(image_url).strip()
+    if not image:
+        return ""
+    parsed = urlparse(image)
+    if parsed.scheme and parsed.scheme not in ("http", "https", "file"):
+        raise ValueError(f"无效图片输入：{image[:120]}")
+    if parsed.scheme in ("http", "https") and not parsed.netloc:
+        raise ValueError(f"无效图片URL：{image[:120]}")
+    return image
+
+
+def _get_event_from_context(context: ContextWrapper[AstrAgentContext]):
+    try:
+        return context.context.event
+    except Exception:
+        return None
+
+
+def _image_url_to_local_path(image_url: str) -> str:
+    parsed = urlparse(image_url)
+    if parsed.scheme == "file":
+        path = unquote(parsed.path)
+        if os.name == "nt" and re.match(r"^/[a-zA-Z]:/", path):
+            path = path[1:]
+        return path
+    return image_url
+
+
+def _workspace_root_for_event(event) -> Optional[Path]:
+    umo = getattr(event, "unified_msg_origin", None)
+    if not umo:
+        return None
+    normalized = re.sub(r"[^A-Za-z0-9._-]+", "_", str(umo).strip()) or "unknown"
+    return (Path(get_astrbot_workspaces_path()) / normalized).resolve(strict=False)
+
+
+def _resolve_image_local_path(event, image_path: str) -> str:
+    path = _image_url_to_local_path(image_path).strip()
+    if not path:
+        raise ValueError("图片路径为空")
+
+    # Absolute path access is governed by AstrBot/runtime filesystem permissions.
+    # This helper only resolves relative paths against the current workspace.
+    if os.path.isabs(path):
+        return path
+
+    workspace_root = _workspace_root_for_event(event)
+    if workspace_root is None:
+        raise ValueError("无法获取当前会话 workspace，不能使用相对图片路径")
+
+    candidate = (workspace_root / path).resolve(strict=False)
+    try:
+        candidate.relative_to(workspace_root)
+    except ValueError:
+        raise ValueError("相对图片路径不能超出当前 workspace")
+    return str(candidate)
+
+
+async def _collect_image_url(
+    context: ContextWrapper[AstrAgentContext], image_url: Any = None
+) -> Tuple[str, Optional[str]]:
+    event = _get_event_from_context(context)
+    try:
+        image = _parse_image_url(image_url)
+    except Exception as e:
+        return "", str(e)
+
+    if image:
+        parsed = urlparse(image)
+        if parsed.scheme in ("http", "https"):
+            return image, None
+        try:
+            path = _resolve_image_local_path(event, image)
+            if not os.path.isfile(path):
+                raise FileNotFoundError("图片文件不存在")
+            return path, None
+        except Exception as e:
+            return "", f"图片失败：{str(e)[:200]}"
+
+    if not event:
+        return "", "必须提供 image_url"
+
+    msgs = event.get_messages()
+    img_segs = [m for m in msgs if isinstance(m, Image)]
+    reply = next((s for s in msgs if isinstance(s, Reply)), None)
+    if not img_segs and reply and reply.chain:
+        img_segs = [s for s in reply.chain if isinstance(s, Image)]
+    if not img_segs:
+        return "", "未找到图片，请提供 image_url 或在当前消息/回复消息中附带图片"
+
+    try:
+        path = await img_segs[0].convert_to_file_path()
+        if not os.path.isfile(path):
+            raise FileNotFoundError("文件下载失败")
+        return path, None
+    except Exception as e:
+        return "", f"图片失败：{str(e)[:200]}"
+
+
+async def _prepare_image_url_kwarg(
+    context: ContextWrapper[AstrAgentContext], kwargs: dict
+) -> Optional[str]:
+    image_url = kwargs.get("image_url")
+    image, err = await _collect_image_url(context, image_url)
+    if err:
+        return err
+    kwargs["image_url"] = image
+    return None
 
 
 @dataclass
@@ -198,10 +331,10 @@ class CateyeOCRTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "image_url": {
                     "type": "string",
-                    "description": "图片 URL 或本地文件路径",
+                    "description": IMAGE_URL_DESCRIPTION,
                 },
             },
-            "required": ["image_url"],
+            "required": [],
         }
     )
 
@@ -217,6 +350,9 @@ class CateyeOCRTool(FunctionTool[AstrAgentContext]):
         if not self._ocr_tool:
             return "OCRTool 未初始化"
         try:
+            err = await _prepare_image_url_kwarg(context, kwargs)
+            if err:
+                return err
             result: ToolResult = await self._ocr_tool.execute(**kwargs)
             if result.success:
                 return json.dumps(result.to_dict(), ensure_ascii=False)
@@ -239,7 +375,7 @@ class CateyeSearchTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "image_url": {
                     "type": "string",
-                    "description": "图片 URL 或本地文件路径",
+                    "description": IMAGE_URL_DESCRIPTION,
                 },
                 "scene": {
                     "type": "string",
@@ -255,7 +391,7 @@ class CateyeSearchTool(FunctionTool[AstrAgentContext]):
                     "enum": ["huawei", "tracemoe", "saucenao"],
                 },
             },
-            "required": ["image_url"],
+            "required": [],
         }
     )
 
@@ -271,6 +407,9 @@ class CateyeSearchTool(FunctionTool[AstrAgentContext]):
         if not self._search_tool:
             return "ImageSearchTool 未初始化"
         try:
+            err = await _prepare_image_url_kwarg(context, kwargs)
+            if err:
+                return err
             result: ToolResult = await self._search_tool.execute(**kwargs)
             if result.success:
                 return json.dumps(result.to_dict(), ensure_ascii=False)
@@ -293,7 +432,7 @@ class CateyeVisionTool(FunctionTool[AstrAgentContext]):
             "properties": {
                 "image_url": {
                     "type": "string",
-                    "description": "图片 URL 或本地文件路径",
+                    "description": IMAGE_URL_DESCRIPTION,
                 },
                 "prompt": {
                     "type": "string",
@@ -308,7 +447,7 @@ class CateyeVisionTool(FunctionTool[AstrAgentContext]):
                     "enum": ["daily", "professional"],
                 },
             },
-            "required": ["image_url", "prompt"],
+            "required": ["prompt"],
         }
     )
 
@@ -324,6 +463,9 @@ class CateyeVisionTool(FunctionTool[AstrAgentContext]):
         if not self._vision_tool:
             return "VisionTool 未初始化"
         try:
+            err = await _prepare_image_url_kwarg(context, kwargs)
+            if err:
+                return err
             result: ToolResult = await self._vision_tool.execute(**kwargs)
             if result.success:
                 return json.dumps(result.to_dict(), ensure_ascii=False)
