@@ -9,6 +9,16 @@ from ...core import BaseTool, ToolResult
 from ...tools.kv_store.kv_store_tool import KVStoreTool
 from ._internal import compute_image_hashes, download_image
 
+CACHE_KEY_PREFIX = "cat_eye:cache:"
+CACHE_CLEANUP_KEY = "cat_eye:maintenance:cache_cleanup_last_run"
+
+
+def _parse_datetime_utc(value: str) -> datetime:
+    dt = datetime.fromisoformat(value)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
 
 class CacheTool(BaseTool):
     def __init__(self):
@@ -88,11 +98,13 @@ class CacheTool(BaseTool):
             return ToolResult(success=False, message="必须提供 action")
 
         try:
+            await self._maybe_cleanup_expired()
+
             img_dir = os.path.join(self._data_dir, "cateye", "images")
             image_path = await download_image(image_url, img_dir)
             md5_val, dhash_val = compute_image_hashes(image_path)
             image_hash = f"{md5_val}_{dhash_val}" if dhash_val else md5_val
-            cache_key = f"cat_eye:cache:{image_hash}_{task_type}"
+            cache_key = f"{CACHE_KEY_PREFIX}{image_hash}_{task_type}"
 
             if action == "check":
                 return await self._check_cache(cache_key)
@@ -106,6 +118,47 @@ class CacheTool(BaseTool):
         except Exception as e:
             logger.error(f"[nekokit.cateye] 缓存操作失败: {e}")
             return ToolResult(success=False, message=f"缓存操作失败: {str(e)}")
+
+    async def _maybe_cleanup_expired(self) -> None:
+        try:
+            today = datetime.now(timezone.utc).date().isoformat()
+            last_run = await self._kv_tool.execute(action="get", key=CACHE_CLEANUP_KEY)
+            if last_run.success and str(last_run.data.get("value", "")) == today:
+                return
+
+            list_result = await self._kv_tool.execute(action="list")
+            if not list_result.success:
+                return
+
+            deleted = 0
+            now = datetime.now(timezone.utc)
+            for key in list_result.data.get("keys", []):
+                if not str(key).startswith(CACHE_KEY_PREFIX):
+                    continue
+                result = await self._kv_tool.execute(action="get", key=key)
+                if not result.success:
+                    continue
+                try:
+                    raw_value = result.data.get("value", "{}")
+                    entry = (
+                        raw_value
+                        if isinstance(raw_value, dict)
+                        else json.loads(raw_value)
+                    )
+                    expires_at = entry.get("expires_at", "")
+                    if expires_at and now > _parse_datetime_utc(expires_at):
+                        await self._kv_tool.execute(action="delete", key=key)
+                        deleted += 1
+                except (json.JSONDecodeError, AttributeError, ValueError, TypeError):
+                    continue
+
+            await self._kv_tool.execute(
+                action="set", key=CACHE_CLEANUP_KEY, value=today
+            )
+            if deleted:
+                logger.info(f"[nekokit.cateye] 已清理 {deleted} 条过期图片缓存")
+        except Exception as e:
+            logger.warning(f"[nekokit.cateye] 图片缓存清理失败: {e}")
 
     async def _check_cache(self, cache_key: str) -> ToolResult:
         result = await self._kv_tool.execute(action="get", key=cache_key)
@@ -124,7 +177,7 @@ class CacheTool(BaseTool):
         expires_at = entry.get("expires_at", "")
         if expires_at:
             try:
-                expire_dt = datetime.fromisoformat(expires_at)
+                expire_dt = _parse_datetime_utc(expires_at)
                 if datetime.now(timezone.utc) > expire_dt:
                     await self._kv_tool.execute(action="delete", key=cache_key)
                     return ToolResult(

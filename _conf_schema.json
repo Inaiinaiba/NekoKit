@@ -108,7 +108,7 @@
         "description": "Context 存储后端",
         "type": "string",
         "options": ["internal", "angel_memory"],
-        "labels": ["内置（SQLite）", "天使之魂记忆插件"],
+        "labels": ["内置（NekoKit）", "天使之魂记忆插件"],
         "default": "internal",
         "hint": "选择 internal 使用 NekoKit 内部存储，选择 angel_memory 委托天使之魂记忆插件管理。若天使之魂不可用则自动降级为内置。"
       }
