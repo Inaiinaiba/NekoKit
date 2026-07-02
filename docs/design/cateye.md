@@ -52,6 +52,8 @@
 
 缓存 Key 基于图片哈希值和任务类型生成（`cat_eye:cache:{image_hash}_{task_type}`），Value 仅存储分析结果和元数据。生命周期 48 小时，超期可清除。缓存条目可被记忆模块管理。
 
+内部缓存调用会触发过期维护：每次进入缓存工具时先检查 `cat_eye:maintenance:cache_cleanup_last_run`，若当天尚未清理，则全量扫描 `cat_eye:cache:` 前缀并删除过期条目；同一天内后续调用只读取维护标记，不重复全量扫描。
+
 ### Value 结构
 
 ```json
@@ -100,6 +102,8 @@
 
 管理图片的认知上下文，存储键格式为 `cat_eye:ctx:{image_hash}`，TTL 为 7 天。
 
+内部上下文同样采用每日一次的过期维护：访问或写入上下文时检查 `cat_eye:maintenance:ctx_cleanup_last_run`，若当天尚未清理，则全量扫描 `cat_eye:ctx:` 前缀并删除已超过 7 天 TTL 的条目。
+
 ### ImageContext 结构
 
 ```json
@@ -144,7 +148,7 @@
 | `remove_context` | 移除上下文 |
 | `build_vision_context` | 构建视觉理解的上下文注入文本 |
 
-`ImageContextManager` 根据是否提供 `bridge` 实例，自动选择内部 SQLite 存储或外部桥接实现。
+`ImageContextManager` 根据是否提供 `bridge` 实例，自动选择 NekoKit 内部存储或外部桥接实现。
 
 ---
 
@@ -244,7 +248,7 @@ NEKOKIT_MANAGED_DATA = {
 
 | 值 | 行为 |
 |----|------|
-| `internal`（默认） | 使用内部 SQLite + kv_store 存储 Context |
+| `internal`（默认） | 使用 NekoKit 内部 kv_store 存储 Context |
 | `angel_memory` | 使用天使之魂记忆插件作为 Context 后端 |
 
 当选择 `angel_memory` 但天使之魂插件未加载时，自动降级为 `internal` 模式，并输出警告日志。

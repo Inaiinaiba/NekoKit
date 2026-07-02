@@ -29,7 +29,7 @@ nekokit/
     │   ├── __init__.py          # 子包导出
     │   ├── context.py           # 上下文工具（获取 AI ID、会话 ID）
     │   ├── kv_store_tool.py     # KV 存储核心实现
-    │   └── storage.py           # SQLite 存储后端
+    │   └── storage.py           # 存储后端（默认 JSON 文件，保留 SQLite 实现）
     └── image_analyzer/          # CatEye 图片识别子包
         ├── __init__.py          # 子包导出
         ├── _internal.py         # 内部共享工具（下载、预处理、哈希）
@@ -65,7 +65,7 @@ nekokit/
 │                              │  共享 _internal                       │
 ├──────────────────────────────┼───────────────────────────────────────┤
 │      StorageBackend          │           外部服务                     │
-│     SQLite 存储引擎          │  RapidOCR | trace.moe | SauceNAO      │
+│     JSON 文件存储（默认）     │  RapidOCR | trace.moe | SauceNAO      │
 │                              │  华为云 | AstrBot LLM                 │
 │                              │  天使之魂 MemoryRuntime（可选）        │
 └──────────────────────────────┴───────────────────────────────────────┘
@@ -87,7 +87,7 @@ nekokit/
 | **Context 管理** | `tools/image_analyzer/image_context_manager.py` | `ImageContextManager`，管理图片认知上下文，7 天 TTL，支持桥接后端 |
 | **桥接协议** | `tools/image_analyzer/memory_bridge.py` | `MemoryBridge` Protocol，定义外部记忆系统接入接口 |
 | **天使之魂桥接** | `tools/image_analyzer/angel_memory_bridge.py` | `AngelMemoryBridge`，桥接到天使之魂记忆插件的 MemoryRuntime |
-| **StorageBackend** | `tools/kv_store/storage.py` | 实现 `SQLiteStorageBackend`，封装 SQLite 增删改查操作 |
+| **StorageBackend** | `tools/kv_store/storage.py` | 实现 `JSONStorageBackend` 和 `SQLiteStorageBackend`，当前默认使用 JSON 文件存储 |
 | **Core 抽象** | `core.py` | 定义 `StorageBackend`、`NamespaceStrategy`、`BaseTool`、`ToolResult` 等抽象基类 |
 | **Context** | `tools/kv_store/context.py` | 从 AstrBot 运行时上下文提取 AI ID 和会话 ID |
 | **Internal** | `tools/image_analyzer/_internal.py` | 图片下载、预处理、哈希计算、Base64 编码等共享工具 |
@@ -96,7 +96,8 @@ nekokit/
 
 ```
 StorageBackend (ABC)        NamespaceStrategy (ABC)        BaseTool (ABC)
-    └── SQLiteStorageBackend     └── DefaultNamespaceStrategy   ├── KVStoreTool
+    ├── JSONStorageBackend       └── DefaultNamespaceStrategy   ├── KVStoreTool
+    └── SQLiteStorageBackend                                  │
                                                                ├── OCRTool ──→ CateyeServices
                                                                ├── ImageSearchTool ──→ CateyeServices
                                                                ├── VisionTool ──→ CateyeServices
@@ -159,10 +160,10 @@ KVStoreTool.execute(action=..., **kwargs)
         ├── 1. 从 context 提取 ai_id, session_id
         ├── 2. 从 config 读取 ai_isolation, session_scope
         ├── 3. 构建 namespace
-        └── 4. 调用 SQLiteStorageBackend 执行操作
+        └── 4. 调用 StorageBackend 执行操作
                 │
                 ▼
-        SQLite (data/nekokit/kvstore.db)
+        JSON 文件 (data/nekokit/kvstore_*.json)
 ```
 
 ### CatEye 核心工具数据流
@@ -184,9 +185,9 @@ BaseTool.execute(**kwargs)
         ├── 3. 执行核心逻辑（OCR/搜图/视觉理解）
         │       └── 外部服务（RapidOCR / trace.moe / SauceNAO / 华为云 / AstrBot LLM）
         ├── 4. 缓存写入：CacheTool.store(image_url, task_type, result)
-        │       └── KVStoreTool → SQLiteStorageBackend → SQLite
+        │       └── 内部 KVStoreTool → StorageBackend → cateye_internal_*.json
         └── 5. 上下文记录：ImageContextManager.add_knowledge(...)
-                └── 内部 SQLite 或 MemoryBridge → 天使之魂
+                └── 内部 KVStoreTool 或 MemoryBridge → 天使之魂
 ```
 
 ### CatEye 缓存数据流
@@ -201,7 +202,7 @@ CacheTool.execute(action="check", image_url=..., task_type="ocr")
         └── 3. 调用 self._kv_tool.execute(action="get", key=cache_key)
                 │
                 ▼
-        KVStoreTool → SQLiteStorageBackend → SQLite
+        内部 KVStoreTool → StorageBackend → cateye_internal_*.json
 ```
 
 ### CatEye Context 数据流
@@ -214,10 +215,10 @@ ImageContextManager.add_knowledge(image_url, source, content)
         ├── bridge 存在 → MemoryBridge.add_knowledge(...)
         │       └── AngelMemoryBridge → 天使之魂 MemoryRuntime.remember()
         │               检索时使用 chained_recall()（自然语言 query + entities 精确匹配）
-        └── bridge 不存在 → 内部 SQLite
+        └── bridge 不存在 → 内部 KVStoreTool
                 ├── _get_or_create_context(image_url, image_hash)
                 └── _save_context(ctx)
-                        └── KVStoreTool → SQLiteStorageBackend → SQLite
+                        └── StorageBackend → cateye_internal_*.json
 ```
 
 ### CatEye 场景预设数据流
@@ -233,7 +234,7 @@ ScenePresetTool.execute()
         └── 3. 若为自定义预设，调用 self._kv_tool.execute(action="get", key="cat_eye:scene:{code}")
                 │
                 ▼
-        KVStoreTool → SQLiteStorageBackend → SQLite
+        内部 KVStoreTool → StorageBackend → cateye_internal_*.json
 ```
 
 ## 配置加载流程
@@ -244,8 +245,10 @@ AstrBot 启动
     ├── 检测 _conf_schema.json → 生成 data/config/nekokit_config.json
     ├── 实例化 Main(context, config)
     │       │
+    │       ├── 初始化公开 KVStoreTool → kvstore_*.json
+    │       ├── 初始化内部 KVStoreTool → cateye_internal_*.json
     │       ├── 读取 config.kv_store → ai_isolation / session_scope
-    │       ├── KVStoreTool.set_config()
+    │       ├── 仅对公开 KVStoreTool 应用用户隔离配置
     │       │
     │       └── _init_cateye_tools(config)
     │               │
@@ -253,7 +256,7 @@ AstrBot 启动
     │               ├── 构建 proxy_config（合并 network_proxy 配置）
     │               │
     │               ├── 初始化 PreprocessTool（传入 config）
-    │               ├── 初始化 CacheTool（传入 config + kv_tool）
+    │               ├── 初始化 CacheTool（传入 config + 内部 kv_tool）
     │               │
     │               ├── 根据 context_backend 配置创建桥接实例
     │               │   ├── "angel_memory" → _create_angel_memory_bridge()

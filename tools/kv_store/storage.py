@@ -8,13 +8,19 @@ from astrbot.api import logger
 from ...core import StorageBackend
 
 
+def _safe_store_name(store_name: str) -> str:
+    safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in store_name)
+    return safe or "kvstore"
+
+
 class JSONStorageBackend(StorageBackend):
     """JSON 文件存储后端"""
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, store_name: str = "kvstore"):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.global_file = self.data_dir / "kvstore_global.json"
+        self.store_name = _safe_store_name(store_name)
+        self.global_file = self.data_dir / f"{self.store_name}_global.json"
         self.namespace_files: Dict[str, Path] = {}
         self._global_data: Dict[str, Any] = {}
         self._lock = threading.Lock()
@@ -39,10 +45,10 @@ class JSONStorageBackend(StorageBackend):
     def _get_namespace_file(self, namespace: str) -> Path:
         if namespace not in self.namespace_files:
             safe_ns = "".join(
-                c if c.isalnum() or c in "-_:" else "_" for c in namespace
+                c if c.isalnum() or c in "-_" else "_" for c in namespace
             )
             self.namespace_files[namespace] = (
-                self.data_dir / f"kvstore_ns_{safe_ns}.json"
+                self.data_dir / f"{self.store_name}_ns_{safe_ns}.json"
             )
         return self.namespace_files[namespace]
 
@@ -124,10 +130,11 @@ class JSONStorageBackend(StorageBackend):
 class SQLiteStorageBackend(StorageBackend):
     """SQLite 数据库存储后端"""
 
-    def __init__(self, data_dir: str):
+    def __init__(self, data_dir: str, store_name: str = "kvstore"):
         self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.db_file = self.data_dir / "kvstore.db"
+        self.store_name = _safe_store_name(store_name)
+        self.db_file = self.data_dir / f"{self.store_name}.db"
         self._lock = threading.Lock()
         self._init_db()
 
@@ -247,8 +254,10 @@ class SQLiteStorageBackend(StorageBackend):
             conn.close()
 
 
-def create_storage_backend(data_dir: str, use_sqlite: bool = False) -> StorageBackend:
+def create_storage_backend(
+    data_dir: str, use_sqlite: bool = False, store_name: str = "kvstore"
+) -> StorageBackend:
     """工厂函数：创建存储后端"""
     if use_sqlite:
-        return SQLiteStorageBackend(data_dir)
-    return JSONStorageBackend(data_dir)
+        return SQLiteStorageBackend(data_dir, store_name=store_name)
+    return JSONStorageBackend(data_dir, store_name=store_name)

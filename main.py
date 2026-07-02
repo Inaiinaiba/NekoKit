@@ -212,7 +212,7 @@ class KVSetTool(FunctionTool[AstrAgentContext]):
                 },
                 "value": {
                     "type": "string",
-                    "description": "值，可以是任意 JSON 兼容的数据",
+                    "description": "要保存的任意字符串内容",
                 },
             },
             "required": ["key", "value"],
@@ -554,7 +554,13 @@ class Main(star.Star):
         self.data_dir = str(StarTools.get_data_dir("nekokit"))
 
         self._kv_tool = KVStoreTool()
-        self._kv_tool.initialize(self.data_dir)
+        self._kv_tool.initialize(self.data_dir, store_name="kvstore")
+
+        self._internal_kv_tool = KVStoreTool()
+        self._internal_kv_tool.initialize(self.data_dir, store_name="cateye_internal")
+        self._internal_kv_tool.set_config(
+            {"ai_isolation": False, "session_scope": False}
+        )
 
         if config:
             kv_store = config.get("kv_store", {})
@@ -582,7 +588,9 @@ class Main(star.Star):
         self._preprocess_tool.initialize(self.data_dir, cateye_config)
 
         self._cache_tool = CacheTool()
-        self._cache_tool.initialize(self.data_dir, cateye_config, kv_tool=self._kv_tool)
+        self._cache_tool.initialize(
+            self.data_dir, cateye_config, kv_tool=self._internal_kv_tool
+        )
 
         context_backend = cateye_config.get("context_backend", "internal")
         bridge = None
@@ -592,7 +600,7 @@ class Main(star.Star):
                 logger.warning("[nekokit] 天使之魂插件未加载，降级为内部 context")
 
         self.image_context_manager = ImageContextManager(
-            self._kv_tool, self.data_dir, bridge=bridge
+            self._internal_kv_tool, self.data_dir, bridge=bridge
         )
 
         services = CateyeServices(
@@ -618,7 +626,9 @@ class Main(star.Star):
         )
 
         self._scene_tool = ScenePresetTool()
-        self._scene_tool.initialize(self.data_dir, cateye_config, kv_tool=self._kv_tool)
+        self._scene_tool.initialize(
+            self.data_dir, cateye_config, kv_tool=self._internal_kv_tool
+        )
 
     def _create_angel_memory_bridge(self):
         try:

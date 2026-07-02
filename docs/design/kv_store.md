@@ -28,7 +28,7 @@
 
 ### 存储后端可插拔
 
-通过 `StorageBackend` 抽象基类定义统一接口（get/set/delete/list_keys/search/clear_namespace），当前实现为 `SQLiteStorageBackend`。如需切换为 Redis、LevelDB 等后端，只需实现该接口并在工厂函数中注册即可，上层业务代码无需任何改动。
+通过 `StorageBackend` 抽象基类定义统一接口（get/set/delete/list_keys/search/clear_namespace），当前默认实现为 `JSONStorageBackend`，另保留 `SQLiteStorageBackend` 可供后续切换。如需切换为 Redis、LevelDB 等后端，只需实现该接口并在工厂函数中注册即可，上层业务代码无需任何改动。
 
 ---
 

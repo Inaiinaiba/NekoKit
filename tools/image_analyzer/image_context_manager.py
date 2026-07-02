@@ -10,6 +10,8 @@ from ._internal import compute_image_hashes, download_image
 
 
 CONTEXT_TTL_DAYS = 7
+CONTEXT_KEY_PREFIX = "cat_eye:ctx:"
+CONTEXT_CLEANUP_KEY = "cat_eye:maintenance:ctx_cleanup_last_run"
 
 
 class KnowledgeEntry:
@@ -81,6 +83,7 @@ class ImageContextManager:
     async def get_context(self, image_url: str) -> Optional[ImageContext]:
         if self._bridge:
             return await self._get_context_via_bridge(image_url)
+        await self._maybe_cleanup_expired_contexts()
         return await self._get_context_internal(image_url)
 
     async def add_knowledge(
@@ -96,6 +99,7 @@ class ImageContextManager:
         image_hash = await self._resolve_hash(image_url)
         if not image_hash:
             return
+        await self._maybe_cleanup_expired_contexts()
         ctx = await self._get_or_create_context(image_url, image_hash)
         entry = KnowledgeEntry(source, content, **meta)
         ctx.knowledge.append(entry)
@@ -115,6 +119,7 @@ class ImageContextManager:
         image_hash = await self._resolve_hash(image_url)
         if not image_hash:
             return
+        await self._maybe_cleanup_expired_contexts()
         ctx = await self._get_or_create_context(image_url, image_hash)
         ctx.scene = {"name": scene, "description": description}
         ctx.updated_at = datetime.now(timezone.utc).isoformat()
@@ -133,6 +138,7 @@ class ImageContextManager:
         image_hash = await self._resolve_hash(image_url)
         if not image_hash:
             return
+        await self._maybe_cleanup_expired_contexts()
         ctx = await self._get_or_create_context(image_url, image_hash)
         ctx.intent = {"keywords": keywords, "distilled": distilled}
         ctx.updated_at = datetime.now(timezone.utc).isoformat()
@@ -166,19 +172,20 @@ class ImageContextManager:
         image_hash = await self._resolve_hash(image_url)
         if not image_hash:
             return
-        cache_key = f"cat_eye:ctx:{image_hash}"
+        cache_key = f"{CONTEXT_KEY_PREFIX}{image_hash}"
         await self._kv_tool.execute(action="delete", key=cache_key)
 
     async def query_by_knowledge(
         self, source: str, keyword: str = ""
     ) -> List[ImageContext]:
+        await self._maybe_cleanup_expired_contexts()
         list_result = await self._kv_tool.execute(action="list")
         if not list_result.success:
             return []
         keys = list_result.data.get("keys", [])
         results = []
         for key in keys:
-            if not key.startswith("cat_eye:ctx:"):
+            if not key.startswith(CONTEXT_KEY_PREFIX):
                 continue
             result = await self._kv_tool.execute(action="get", key=key)
             if result.success:
@@ -209,7 +216,7 @@ class ImageContextManager:
         image_hash = await self._resolve_hash(image_url)
         if not image_hash:
             return None
-        cache_key = f"cat_eye:ctx:{image_hash}"
+        cache_key = f"{CONTEXT_KEY_PREFIX}{image_hash}"
         result = await self._kv_tool.execute(action="get", key=cache_key)
         if not result.success:
             return None
@@ -237,7 +244,7 @@ class ImageContextManager:
     async def _get_or_create_context(
         self, image_url: str, image_hash: str
     ) -> ImageContext:
-        cache_key = f"cat_eye:ctx:{image_hash}"
+        cache_key = f"{CONTEXT_KEY_PREFIX}{image_hash}"
         result = await self._kv_tool.execute(action="get", key=cache_key)
         if result.success:
             try:
@@ -249,9 +256,47 @@ class ImageContextManager:
         return ImageContext(image_hash, image_url)
 
     async def _save_context(self, ctx: ImageContext) -> None:
-        cache_key = f"cat_eye:ctx:{ctx.image_hash}"
+        cache_key = f"{CONTEXT_KEY_PREFIX}{ctx.image_hash}"
         value_json = json.dumps(ctx.to_dict(), ensure_ascii=False)
         await self._kv_tool.execute(action="set", key=cache_key, value=value_json)
+
+    async def _maybe_cleanup_expired_contexts(self) -> None:
+        try:
+            today = datetime.now(timezone.utc).date().isoformat()
+            last_run = await self._kv_tool.execute(
+                action="get", key=CONTEXT_CLEANUP_KEY
+            )
+            if last_run.success and str(last_run.data.get("value", "")) == today:
+                return
+
+            list_result = await self._kv_tool.execute(action="list")
+            if not list_result.success:
+                return
+
+            deleted = 0
+            for key in list_result.data.get("keys", []):
+                if not str(key).startswith(CONTEXT_KEY_PREFIX):
+                    continue
+                result = await self._kv_tool.execute(action="get", key=key)
+                if not result.success:
+                    continue
+                try:
+                    raw = result.data.get("value", "{}")
+                    data = raw if isinstance(raw, dict) else json.loads(raw)
+                    ctx = ImageContext.from_dict(data)
+                    if self._is_expired(ctx):
+                        await self._kv_tool.execute(action="delete", key=key)
+                        deleted += 1
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+
+            await self._kv_tool.execute(
+                action="set", key=CONTEXT_CLEANUP_KEY, value=today
+            )
+            if deleted:
+                logger.info(f"[nekokit.cateye] 已清理 {deleted} 条过期图片上下文")
+        except Exception as e:
+            logger.warning(f"[nekokit.cateye] 图片上下文清理失败: {e}")
 
     def _is_expired(self, ctx: ImageContext) -> bool:
         try:
