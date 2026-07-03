@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import uuid
 
 from astrbot.api import logger
 from astrbot.api import star
@@ -10,13 +11,17 @@ from astrbot.api.message_components import Image, Reply
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
-from astrbot.core.utils.astrbot_path import get_astrbot_workspaces_path
+from astrbot.core.utils.astrbot_path import (
+    get_astrbot_temp_path,
+    get_astrbot_workspaces_path,
+)
+from astrbot.core.utils.io import download_file
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional, Tuple
 from urllib.parse import unquote, urlparse
 
-from .tools import KVStoreTool
+from .tools import KVStoreTool, FileStoreTool
 from .tools.image_analyzer import (
     OCRTool,
     ImageSearchTool,
@@ -32,30 +37,41 @@ from .core import ToolResult
 
 
 IMAGE_URL_DESCRIPTION = (
-    'Image URL or local path, e.g. "https://example.com/a.png" or '
-    '"/AstrBot/data/temp/a.png". The value can be an http/https URL or a local '
-    "path. Local paths support AstrBot temp directory files and non-sandbox "
-    "workspace files. AstrBot temp directory paths usually contain data/temp; "
-    "files retrieved from the sandbox with astrbot_download_file are automatically "
-    "placed in the temp directory."
+    "支持网络地址或本地图片路径，如 https://example.com/a.png 或 "
+    "/AstrBot/data/temp/a.png；也支持当前会话 workspace 下的相对路径。"
+    "注意：沙箱中的图片需先取回到本地路径后再传入。"
+)
+
+FILE_SOURCE_DESCRIPTION = (
+    "支持网络地址或本地路径，如 https://example.com/a.zip 或 "
+    "/AstrBot/data/temp/a.zip；也支持当前会话 workspace 下的相对路径。"
+    "注意：沙箱中的文件需先取回到本地路径后再传入。"
 )
 
 
-def _parse_image_url(image_url: Any) -> str:
-    if not image_url:
+def _parse_url_or_path(value: Any, field_name: str) -> str:
+    if not value:
         return ""
-    if isinstance(image_url, (list, tuple, dict)):
-        raise ValueError("image_url 只接受单个图片 URL 或路径")
+    if isinstance(value, (list, tuple, dict)):
+        raise ValueError(f"{field_name} 只接受单个 URL 或路径")
 
-    image = str(image_url).strip()
-    if not image:
+    text = str(value).strip()
+    if not text:
         return ""
-    parsed = urlparse(image)
+    parsed = urlparse(text)
     if parsed.scheme and parsed.scheme not in ("http", "https", "file"):
-        raise ValueError(f"无效图片输入：{image[:120]}")
+        raise ValueError(f"无效输入：{text[:120]}")
     if parsed.scheme in ("http", "https") and not parsed.netloc:
-        raise ValueError(f"无效图片URL：{image[:120]}")
-    return image
+        raise ValueError(f"无效URL：{text[:120]}")
+    return text
+
+
+def _parse_image_url(image_url: Any) -> str:
+    return _parse_url_or_path(image_url, "image_url")
+
+
+def _parse_file_source(source_path: Any) -> str:
+    return _parse_url_or_path(source_path, "source_path")
 
 
 def _get_event_from_context(context: ContextWrapper[AstrAgentContext]):
@@ -66,13 +82,17 @@ def _get_event_from_context(context: ContextWrapper[AstrAgentContext]):
 
 
 def _image_url_to_local_path(image_url: str) -> str:
-    parsed = urlparse(image_url)
+    return _url_or_path_to_local_path(image_url)
+
+
+def _url_or_path_to_local_path(value: str) -> str:
+    parsed = urlparse(value)
     if parsed.scheme == "file":
         path = unquote(parsed.path)
         if os.name == "nt" and re.match(r"^/[a-zA-Z]:/", path):
             path = path[1:]
         return path
-    return image_url
+    return value
 
 
 def _workspace_root_for_event(event) -> Optional[Path]:
@@ -83,10 +103,10 @@ def _workspace_root_for_event(event) -> Optional[Path]:
     return (Path(get_astrbot_workspaces_path()) / normalized).resolve(strict=False)
 
 
-def _resolve_image_local_path(event, image_path: str) -> str:
-    path = _image_url_to_local_path(image_path).strip()
+def _resolve_local_path(event, path_or_uri: str, label: str) -> str:
+    path = _url_or_path_to_local_path(path_or_uri).strip()
     if not path:
-        raise ValueError("图片路径为空")
+        raise ValueError(f"{label}路径为空")
 
     # Absolute path access is governed by AstrBot/runtime filesystem permissions.
     # This helper only resolves relative paths against the current workspace.
@@ -95,14 +115,51 @@ def _resolve_image_local_path(event, image_path: str) -> str:
 
     workspace_root = _workspace_root_for_event(event)
     if workspace_root is None:
-        raise ValueError("无法获取当前会话 workspace，不能使用相对图片路径")
+        raise ValueError(f"无法获取当前会话 workspace，不能使用相对{label}路径")
 
     candidate = (workspace_root / path).resolve(strict=False)
     try:
         candidate.relative_to(workspace_root)
     except ValueError:
-        raise ValueError("相对图片路径不能超出当前 workspace")
+        raise ValueError(f"相对{label}路径不能超出当前 workspace")
     return str(candidate)
+
+
+def _resolve_image_local_path(event, image_path: str) -> str:
+    return _resolve_local_path(event, image_path, "图片")
+
+
+def _resolve_file_local_path(event, file_path: str) -> str:
+    return _resolve_local_path(event, file_path, "文件")
+
+
+def _safe_download_name(url: str) -> str:
+    parsed = urlparse(url)
+    name = Path(unquote(parsed.path)).name.strip()
+    for char in ':*?"<>|':
+        name = name.replace(char, "_")
+    if name in {"", ".", ".."}:
+        name = "downloaded_file"
+    stem = Path(name).stem or "downloaded_file"
+    suffix = Path(name).suffix
+    return f"filestore_{stem}_{uuid.uuid4().hex[:8]}{suffix}"
+
+
+def _source_filename_from_value(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme in ("http", "https", "file"):
+        name = Path(unquote(parsed.path)).name.strip()
+    else:
+        name = Path(_url_or_path_to_local_path(value)).name.strip()
+    return name
+
+
+async def _download_file_source(url: str) -> str:
+    target_dir = Path(get_astrbot_temp_path())
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / _safe_download_name(url)
+    await download_file(url, str(target))
+    return str(target.resolve())
 
 
 async def _collect_image_url(
@@ -154,6 +211,54 @@ async def _prepare_image_url_kwarg(
     if err:
         return err
     kwargs["image_url"] = image
+    return None
+
+
+async def _collect_file_source(
+    context: ContextWrapper[AstrAgentContext], source_path: Any = None
+) -> Tuple[str, Optional[str], Optional[str]]:
+    event = _get_event_from_context(context)
+    try:
+        source = _parse_file_source(source_path)
+    except Exception as e:
+        return "", None, str(e)
+
+    if source:
+        parsed = urlparse(source)
+        source_filename = _source_filename_from_value(source)
+        if parsed.scheme in ("http", "https"):
+            try:
+                path = await _download_file_source(source)
+                if not os.path.isfile(path):
+                    raise FileNotFoundError("文件下载失败")
+                return path, source_filename, None
+            except Exception as e:
+                return "", None, f"文件失败：{str(e)[:200]}"
+        try:
+            path = _resolve_file_local_path(event, source)
+            if not os.path.isfile(path):
+                raise FileNotFoundError("文件不存在")
+            return path, source_filename or Path(path).name, None
+        except Exception as e:
+            return "", None, f"文件失败：{str(e)[:200]}"
+
+    return "", None, "必须提供 source_path、content、content_base64 之一"
+
+
+async def _prepare_file_source_kwarg(
+    context: ContextWrapper[AstrAgentContext], kwargs: dict
+) -> Optional[str]:
+    if "content" in kwargs or "content_base64" in kwargs:
+        return None
+    if not kwargs.get("source_path"):
+        return "必须提供 source_path、content、content_base64 之一"
+    source_path = kwargs.get("source_path")
+    source, source_filename, err = await _collect_file_source(context, source_path)
+    if err:
+        return err
+    kwargs["source_path"] = source
+    if source_filename:
+        kwargs["_source_filename"] = source_filename
     return None
 
 
@@ -316,6 +421,198 @@ class KVListTool(FunctionTool[AstrAgentContext]):
                 return result.message
         except Exception as e:
             logger.error(f"[KVListTool] 执行失败: {e}")
+            return f"执行失败: {str(e)}"
+
+
+@dataclass
+class FileSaveTool(FunctionTool[AstrAgentContext]):
+    name: str = "nkit_file_save"
+    description: str = "保存或覆盖文件到 NekoKit 持久化文件存储"
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "key": {"type": "string", "description": "文件标识键名"},
+                "source_path": {
+                    "type": "string",
+                    "description": FILE_SOURCE_DESCRIPTION,
+                },
+                "content": {
+                    "type": "string",
+                    "description": "要直接写入文件的 UTF-8 文本内容",
+                },
+                "content_base64": {
+                    "type": "string",
+                    "description": "要直接写入文件的 base64 内容",
+                },
+                "retention_days": {
+                    "type": "integer",
+                    "description": "文件保留天数，不填默认 7 天；-1 表示永久保留",
+                },
+            },
+            "required": ["key"],
+        }
+    )
+
+    _file_tool: FileStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, file_tool: FileStoreTool) -> "FileSaveTool":
+        tool = cls()
+        tool._file_tool = file_tool
+        return tool
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        if not self._file_tool:
+            return "FileStoreTool 未初始化"
+        self._file_tool.set_context(context)
+        try:
+            err = await _prepare_file_source_kwarg(context, kwargs)
+            if err:
+                return err
+            result: ToolResult = await self._file_tool.execute(action="save", **kwargs)
+            return json.dumps(result.to_dict(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[FileSaveTool] 执行失败: {e}")
+            return f"执行失败: {str(e)}"
+
+
+@dataclass
+class FileGetPathTool(FunctionTool[AstrAgentContext]):
+    name: str = "nkit_file_get_path"
+    description: str = "获取已保存文件的本地绝对路径，用于 AstrBot 内部共享文件"
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {"key": {"type": "string", "description": "文件标识键名"}},
+            "required": ["key"],
+        }
+    )
+
+    _file_tool: FileStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, file_tool: FileStoreTool) -> "FileGetPathTool":
+        tool = cls()
+        tool._file_tool = file_tool
+        return tool
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        if not self._file_tool:
+            return "FileStoreTool 未初始化"
+        self._file_tool.set_context(context)
+        try:
+            result: ToolResult = await self._file_tool.execute(
+                action="get_path", **kwargs
+            )
+            return json.dumps(result.to_dict(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[FileGetPathTool] 执行失败: {e}")
+            return f"执行失败: {str(e)}"
+
+
+@dataclass
+class FileGetUrlTool(FunctionTool[AstrAgentContext]):
+    name: str = "nkit_file_get_url"
+    description: str = "获取已保存文件的临时下载 URL，访问一次后 URL 会被销毁"
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {"key": {"type": "string", "description": "文件标识键名"}},
+            "required": ["key"],
+        }
+    )
+
+    _file_tool: FileStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, file_tool: FileStoreTool) -> "FileGetUrlTool":
+        tool = cls()
+        tool._file_tool = file_tool
+        return tool
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        if not self._file_tool:
+            return "FileStoreTool 未初始化"
+        self._file_tool.set_context(context)
+        try:
+            result: ToolResult = await self._file_tool.execute(
+                action="get_url", **kwargs
+            )
+            return json.dumps(result.to_dict(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[FileGetUrlTool] 执行失败: {e}")
+            return f"执行失败: {str(e)}"
+
+
+@dataclass
+class FileListTool(FunctionTool[AstrAgentContext]):
+    name: str = "nkit_file_list"
+    description: str = "列出当前作用域下保存的文件"
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {
+                "prefix": {
+                    "type": "string",
+                    "description": "可选，按 key 前缀筛选文件",
+                }
+            },
+            "required": [],
+        }
+    )
+
+    _file_tool: FileStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, file_tool: FileStoreTool) -> "FileListTool":
+        tool = cls()
+        tool._file_tool = file_tool
+        return tool
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        if not self._file_tool:
+            return "FileStoreTool 未初始化"
+        self._file_tool.set_context(context)
+        try:
+            result: ToolResult = await self._file_tool.execute(action="list", **kwargs)
+            return json.dumps(result.to_dict(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[FileListTool] 执行失败: {e}")
+            return f"执行失败: {str(e)}"
+
+
+@dataclass
+class FileDeleteTool(FunctionTool[AstrAgentContext]):
+    name: str = "nkit_file_delete"
+    description: str = "删除当前作用域下保存的文件"
+    parameters: dict = field(
+        default_factory=lambda: {
+            "type": "object",
+            "properties": {"key": {"type": "string", "description": "文件标识键名"}},
+            "required": ["key"],
+        }
+    )
+
+    _file_tool: FileStoreTool = None
+
+    @classmethod
+    def create_with_tool(cls, file_tool: FileStoreTool) -> "FileDeleteTool":
+        tool = cls()
+        tool._file_tool = file_tool
+        return tool
+
+    async def call(self, context: ContextWrapper[AstrAgentContext], **kwargs) -> str:
+        if not self._file_tool:
+            return "FileStoreTool 未初始化"
+        self._file_tool.set_context(context)
+        try:
+            result: ToolResult = await self._file_tool.execute(
+                action="delete", **kwargs
+            )
+            return json.dumps(result.to_dict(), ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"[FileDeleteTool] 执行失败: {e}")
             return f"执行失败: {str(e)}"
 
 
@@ -556,6 +853,9 @@ class Main(star.Star):
         self._kv_tool = KVStoreTool()
         self._kv_tool.initialize(self.data_dir, store_name="kvstore")
 
+        self._file_tool = FileStoreTool()
+        self._file_tool.initialize(self.data_dir, store_name="file_store")
+
         self._internal_kv_tool = KVStoreTool()
         self._internal_kv_tool.initialize(self.data_dir, store_name="cateye_internal")
         self._internal_kv_tool.set_config(
@@ -570,6 +870,7 @@ class Main(star.Star):
             if kv_store.get("session_scope") is not None:
                 kvstore_config["session_scope"] = kv_store["session_scope"]
             self._kv_tool.set_config(kvstore_config)
+            self._file_tool.set_config(kvstore_config)
             logger.info(f"[NekoKit] 已加载配置: {kvstore_config}")
 
         self.image_context_manager = None
@@ -578,7 +879,9 @@ class Main(star.Star):
 
         self._register_tools()
 
-        logger.info("[NekoKit] 插件已加载，已注册 KV 存储工具和 Cateye 图片识别工具集")
+        logger.info(
+            "[NekoKit] 插件已加载，已注册 KV 存储、文件存储和 Cateye 图片识别工具集"
+        )
 
     def _init_cateye_tools(self, config: AstrBotConfig = None) -> None:
         cateye_config = self._build_cateye_config(config)
@@ -714,6 +1017,11 @@ class Main(star.Star):
             KVSetTool.create_with_tool(self._kv_tool),
             KVDeleteTool.create_with_tool(self._kv_tool),
             KVListTool.create_with_tool(self._kv_tool),
+            FileSaveTool.create_with_tool(self._file_tool),
+            FileGetPathTool.create_with_tool(self._file_tool),
+            FileGetUrlTool.create_with_tool(self._file_tool),
+            FileListTool.create_with_tool(self._file_tool),
+            FileDeleteTool.create_with_tool(self._file_tool),
             CateyeOCRTool.create_with_tool(self._ocr_tool),
             CateyeSearchTool.create_with_tool(self._search_tool),
             CateyeVisionTool.create_with_tool(self._vision_tool),

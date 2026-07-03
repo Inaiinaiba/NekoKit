@@ -17,9 +17,11 @@ nekokit/
 ├── docs/
 │   ├── agent_guides/
 │   │   ├── kv_store.md          # KV 存储工具使用指南（面向 AI）
+│   │   ├── file_store.md        # 文件存储工具使用指南（面向 AI）
 │   │   └── cateye.md            # 图片识别工具使用指南（面向 AI）
 │   ├── design/
 │   │   ├── kv_store.md          # KV 存储工具集设计文档
+│   │   ├── file_store.md        # 文件存储工具集设计文档
 │   │   └── cateye.md            # CatEye 图片识别工具集设计文档
 │   └── developer/
 │       └── architecture.md      # 本文件 -- 项目架构文档
@@ -30,6 +32,10 @@ nekokit/
     │   ├── context.py           # 上下文工具（获取 AI ID、会话 ID）
     │   ├── kv_store_tool.py     # KV 存储核心实现
     │   └── storage.py           # 存储后端（默认 JSON 文件，保留 SQLite 实现）
+    ├── file_store/              # 文件存储子包
+    │   ├── __init__.py          # 子包导出
+    │   ├── file_store_tool.py   # 文件存储核心实现
+    │   └── storage.py           # 文件索引与 blob 存储
     └── image_analyzer/          # CatEye 图片识别子包
         ├── __init__.py          # 子包导出
         ├── _internal.py         # 内部共享工具（下载、预处理、哈希）
@@ -51,6 +57,8 @@ nekokit/
 ┌──────────────────────────────────────────────────────────────────────┐
 │                         FunctionTool 层                              │  main.py
 │  nkit_kv_get | nkit_kv_set | nkit_kv_delete | nkit_kv_list          │
+│  nkit_file_save | nkit_file_get_path | nkit_file_get_url            │
+│  nkit_file_list | nkit_file_delete                                  │
 │  nkit_ce_ocr | nkit_ce_search | nkit_ce_vision | nkit_ce_scene      │
 ├──────────────────────────────┬───────────────────────────────────────┤
 │     KVStoreTool (BaseTool)   │     CatEye 工具集 (BaseTool)          │
@@ -75,8 +83,9 @@ nekokit/
 
 | 层次 | 文件 | 职责 |
 |------|------|------|
-| **FunctionTool** | `main.py` | 定义 8 个独立的 AstrBot FunctionTool，每个工具负责：参数校验、调用 BaseTool、结果转换 |
+| **FunctionTool** | `main.py` | 定义 13 个独立的 AstrBot FunctionTool，每个工具负责：参数校验、调用 BaseTool、结果转换 |
 | **BaseTool - KV** | `tools/kv_store/kv_store_tool.py` | 实现 `KVStoreTool(BaseTool)`，包含核心业务逻辑：action 分发、命名空间构建、配置读取 |
+| **BaseTool - 文件** | `tools/file_store/file_store_tool.py` | 实现 `FileStoreTool(BaseTool)`，提供文件保存、路径读取、临时 URL、列表和删除 |
 | **BaseTool - OCR** | `tools/image_analyzer/ocr_tool.py` | 实现 `OCRTool(BaseTool)`，RapidOCR 文字识别 + 线程池异步，内化缓存和预处理 |
 | **BaseTool - 搜图** | `tools/image_analyzer/image_search_tool.py` | 实现 `ImageSearchTool(BaseTool)`，多供应商搜图 + 场景自动选择，内化缓存和预处理 |
 | **BaseTool - 视觉** | `tools/image_analyzer/vision_tool.py` | 实现 `VisionTool(BaseTool)`，双模式大模型视觉理解，内化缓存、预处理和上下文注入 |
@@ -88,6 +97,7 @@ nekokit/
 | **桥接协议** | `tools/image_analyzer/memory_bridge.py` | `MemoryBridge` Protocol，定义外部记忆系统接入接口 |
 | **天使之魂桥接** | `tools/image_analyzer/angel_memory_bridge.py` | `AngelMemoryBridge`，桥接到天使之魂记忆插件的 MemoryRuntime |
 | **StorageBackend** | `tools/kv_store/storage.py` | 实现 `JSONStorageBackend` 和 `SQLiteStorageBackend`，当前默认使用 JSON 文件存储 |
+| **FileStorageBackend** | `tools/file_store/storage.py` | 使用 JSON 索引和 blob 文件持久化保存文件 |
 | **Core 抽象** | `core.py` | 定义 `StorageBackend`、`NamespaceStrategy`、`BaseTool`、`ToolResult` 等抽象基类 |
 | **Context** | `tools/kv_store/context.py` | 从 AstrBot 运行时上下文提取 AI ID 和会话 ID |
 | **Internal** | `tools/image_analyzer/_internal.py` | 图片下载、预处理、哈希计算、Base64 编码等共享工具 |
@@ -128,6 +138,11 @@ FunctionTool (AstrBot)
     ├── KVSetTool      ──→  KVStoreTool.execute(action="set")
     ├── KVDeleteTool   ──→  KVStoreTool.execute(action="delete")
     ├── KVListTool     ──→  KVStoreTool.execute(action="list")
+    ├── FileSaveTool       ──→  FileStoreTool.execute(action="save")
+    ├── FileGetPathTool    ──→  FileStoreTool.execute(action="get_path")
+    ├── FileGetUrlTool     ──→  FileStoreTool.execute(action="get_url")
+    ├── FileListTool       ──→  FileStoreTool.execute(action="list")
+    ├── FileDeleteTool     ──→  FileStoreTool.execute(action="delete")
     ├── CateyeOCRTool      ──→  OCRTool.execute()
     ├── CateyeSearchTool   ──→  ImageSearchTool.execute()
     ├── CateyeVisionTool   ──→  VisionTool.execute()
@@ -247,7 +262,7 @@ AstrBot 启动
     │       │
     │       ├── 初始化公开 KVStoreTool → kvstore_*.json
     │       ├── 初始化内部 KVStoreTool → cateye_internal_*.json
-    │       ├── 读取 config.kv_store → ai_isolation / session_scope
+    │       ├── 读取 config.kv_store（WebUI 显示为“存储隔离”）→ ai_isolation / session_scope
     │       ├── 仅对公开 KVStoreTool 应用用户隔离配置
     │       │
     │       └── _init_cateye_tools(config)
