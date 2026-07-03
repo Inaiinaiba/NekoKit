@@ -29,7 +29,7 @@ def _filename_from_key(key: str) -> str:
 
 def _safe_filename(value: str, fallback: str) -> str:
     basename = str(value or "").replace("\x00", "").strip()
-    for char in ':*?"<>|':
+    for char in '/\\:*?"<>|':
         basename = basename.replace(char, "_")
     if basename in {"", ".", ".."}:
         basename = fallback
@@ -312,9 +312,12 @@ class FileStorageBackend:
         self._save_index_file(index_file, data)
 
     def _load_index_by_file(self, index_file: Path) -> Dict[str, Dict[str, Any]]:
-        data = self._load_json_file(index_file)
-        if isinstance(data, dict):
-            return data
+        try:
+            data = self._load_json_file(index_file)
+            if isinstance(data, dict):
+                return data
+        except Exception as e:
+            logger.warning(f"[FileStorage] 加载索引失败，跳过清理: {e}")
         return {}
 
     def _save_index_file(

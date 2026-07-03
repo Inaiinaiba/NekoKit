@@ -145,7 +145,7 @@ class FileStoreTool(BaseTool):
         elif content_base64 is not None:
             metadata = self._storage.put_bytes(
                 key,
-                base64.b64decode(str(content_base64)),
+                base64.b64decode(str(content_base64), validate=True),
                 namespace,
                 retention_days=retention_days,
             )

@@ -233,14 +233,14 @@ async def _collect_file_source(
                     raise FileNotFoundError("文件下载失败")
                 return path, source_filename, None
             except Exception as e:
-                return "", None, f"文件失败：{str(e)[:200]}"
+                return "", None, f"获取文件失败：{str(e)[:200]}"
         try:
             path = _resolve_file_local_path(event, source)
             if not os.path.isfile(path):
                 raise FileNotFoundError("文件不存在")
             return path, source_filename or Path(path).name, None
         except Exception as e:
-            return "", None, f"文件失败：{str(e)[:200]}"
+            return "", None, f"获取文件失败：{str(e)[:200]}"
 
     return "", None, "必须提供 source_path、content、content_base64 之一"
 
