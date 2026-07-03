@@ -1,20 +1,20 @@
 {
   "kv_store": {
-    "description": "KV 存储",
+    "description": "存储隔离",
     "type": "object",
-    "hint": "控制 KV 存储的数据隔离策略。开启 AI 隔离后，不同 AI 人格的数据互不可见；开启会话作用域后，每个群聊/私聊拥有独立数据空间。",
+    "hint": "控制 NekoKit 存储工具的数据隔离策略，包括 KV 存储和文件存储。开启 AI 隔离后，不同 AI 人格的数据互不可见；开启会话作用域后，每个群聊/私聊拥有独立数据空间。",
     "items": {
       "ai_isolation": {
         "description": "AI 隔离",
         "type": "bool",
         "default": true,
-        "hint": "开启后不同 AI 人格之间的数据完全隔离，关闭则所有 AI 共享数据。"
+        "hint": "开启后不同 AI 人格之间的 KV 与文件数据完全隔离，关闭则所有 AI 共享数据。"
       },
       "session_scope": {
         "description": "会话作用域",
         "type": "bool",
         "default": false,
-        "hint": "开启后每个会话（群聊/私聊）拥有独立的数据空间，关闭则同一 AI 的数据跨会话共享。"
+        "hint": "开启后每个会话（群聊/私聊）拥有独立的 KV 与文件数据空间，关闭则同一 AI 的数据跨会话共享。"
       }
     }
   },
