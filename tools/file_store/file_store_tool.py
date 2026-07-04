@@ -1,11 +1,15 @@
 import base64
 import os
+import shutil
+import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlparse
 
 from astrbot.api import logger
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 from ...core import BaseTool, NamespaceStrategy, ToolResult
 from ..kv_store.context import get_ai_id, get_session_id
@@ -169,7 +173,8 @@ class FileStoreTool(BaseTool):
         if not path:
             return ToolResult(success=False, message=f"找不到文件 '{key}'")
         metadata = self._storage.get_metadata(key, namespace) or {"key": key}
-        metadata["path"] = path
+        temp_path = self._copy_to_temp(path, metadata)
+        metadata["path"] = temp_path
         return ToolResult(success=True, message="已获取文件路径", data=metadata)
 
     async def _handle_get_url(
@@ -244,3 +249,28 @@ class FileStoreTool(BaseTool):
                 path = path[1:]
             return path
         return source_path
+
+    @staticmethod
+    def _copy_to_temp(source_path: str, metadata: Dict[str, Any]) -> str:
+        source = Path(source_path).resolve(strict=True)
+        temp_root = Path(get_astrbot_temp_path()) / "nekokit"
+        temp_root.mkdir(parents=True, exist_ok=True)
+
+        filename = str(metadata.get("filename") or source.name or "file").strip()
+        safe_name = FileStoreTool._safe_temp_filename(filename)
+        target = (temp_root / f"{uuid.uuid4().hex}_{safe_name}").resolve(strict=False)
+        try:
+            target.relative_to(temp_root.resolve(strict=False))
+        except ValueError:
+            raise ValueError("临时文件路径越界")
+        shutil.copy2(source, target)
+        return str(target)
+
+    @staticmethod
+    def _safe_temp_filename(filename: str) -> str:
+        safe = str(filename or "file").replace("\x00", "").strip()
+        for char in '/\\:*?"<>|':
+            safe = safe.replace(char, "_")
+        if safe in {"", ".", ".."}:
+            return "file"
+        return safe

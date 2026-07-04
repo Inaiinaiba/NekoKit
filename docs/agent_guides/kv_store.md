@@ -17,7 +17,7 @@
 | `nkit_kv_get` | 读取值 | `key` |
 | `nkit_kv_set` | 写入/更新值 | `key`, `value`（任意字符串，key 已存在则覆盖） |
 | `nkit_kv_delete` | 删除值 | `key` |
-| `nkit_kv_list` | 列出当前作用域所有键 | 无参数 |
+| `nkit_kv_list` | 列出当前作用域所有键 | 可选 `prefix` |
 
 ---
 
@@ -60,6 +60,9 @@ nkit_kv_set(key="config:display", value="theme=dark; lang=zh")
 nkit_kv_list()
 → ["user:001:profile", "user:002:profile", "task:shopping:orders"]
 → 按冒号前缀识别数据类别
+
+nkit_kv_list(prefix="user:")
+→ ["user:001:profile", "user:002:profile"]
 ```
 
 ---

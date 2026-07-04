@@ -7,10 +7,12 @@ from astrbot.api import logger
 from astrbot.api import star
 from astrbot.api.star import StarTools
 from astrbot.api import AstrBotConfig
+from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.message_components import Image, Reply
 from astrbot.core.agent.tool import FunctionTool
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.astr_agent_context import AstrAgentContext
+from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_temp_path,
     get_astrbot_workspaces_path,
@@ -34,6 +36,7 @@ from .tools.image_analyzer import (
 )
 from .tools.image_analyzer.angel_memory_bridge import AngelMemoryBridge
 from .core import ToolResult
+from .command_service import NekoKitCommandService
 
 
 IMAGE_URL_DESCRIPTION = (
@@ -392,11 +395,16 @@ class KVDeleteTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class KVListTool(FunctionTool[AstrAgentContext]):
     name: str = "nkit_kv_list"
-    description: str = "列出当前作用域下的所有键"
+    description: str = "列出当前作用域下的所有键，可按键名前缀过滤"
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
-            "properties": {},
+            "properties": {
+                "prefix": {
+                    "type": "string",
+                    "description": "可选键名前缀，只返回以该前缀开头的键",
+                },
+            },
         }
     )
 
@@ -480,7 +488,7 @@ class FileSaveTool(FunctionTool[AstrAgentContext]):
 @dataclass
 class FileGetPathTool(FunctionTool[AstrAgentContext]):
     name: str = "nkit_file_get_path"
-    description: str = "获取已保存文件的本地绝对路径，用于 AstrBot 内部共享文件"
+    description: str = "复制已保存文件到 AstrBot 临时目录，并返回临时副本路径"
     parameters: dict = field(
         default_factory=lambda: {
             "type": "object",
@@ -1027,7 +1035,106 @@ class Main(star.Star):
             CateyeVisionTool.create_with_tool(self._vision_tool),
             CateyeSceneTool.create_with_tool(self._scene_tool),
         ]
+        self._llm_tools = tools
         self.context.add_llm_tools(*tools)
+        self._command_service = NekoKitCommandService(
+            self.context,
+            self._kv_tool,
+            self._file_tool,
+            tools,
+            _prepare_file_source_kwarg,
+        )
+
+    @filter.command_group("nkit")
+    def nkit(self):
+        """NekoKit 命令组"""
+        pass
+
+    @nkit.command("help")
+    async def nkit_help(self, event: AstrMessageEvent):
+        """查询 NekoKit 所有人工命令"""
+        yield event.plain_result(self._command_service.help_text())
+
+    @nkit.command("tools")
+    async def nkit_tools(self, event: AstrMessageEvent):
+        """查询提供给 LLM 的工具和描述"""
+        yield event.plain_result(self._command_service.tools_text())
+
+    @nkit.group("kv")
+    def nkit_kv(self):
+        """KV Store 命令组"""
+        pass
+
+    @nkit_kv.command("list")
+    async def nkit_kv_list(self, event: AstrMessageEvent, prefix: str = ""):
+        """列出当前作用域下的所有键"""
+        text = await self._command_service.run_kv_list(event, prefix)
+        yield event.plain_result(text)
+
+    @nkit_kv.command("get")
+    async def nkit_kv_get(self, event: AstrMessageEvent, key: str):
+        """根据键名获取存储的值"""
+        text = await self._command_service.run_kv(event, "get", key=key)
+        yield event.plain_result(text)
+
+    @nkit_kv.command("set")
+    async def nkit_kv_set(self, event: AstrMessageEvent, key: str, value: GreedyStr):
+        """设置或更新键值对"""
+        text = await self._command_service.run_kv(
+            event, "set", key=key, value=value
+        )
+        yield event.plain_result(text)
+
+    @nkit_kv.command("delete")
+    async def nkit_kv_delete(self, event: AstrMessageEvent, key: str):
+        """根据键名删除存储的值"""
+        text = await self._command_service.run_kv(event, "delete", key=key)
+        yield event.plain_result(text)
+
+    @nkit.group("file")
+    def nkit_file(self):
+        """File Store 命令组"""
+        pass
+
+    @nkit_file.command("list")
+    async def nkit_file_list(self, event: AstrMessageEvent, prefix: str = ""):
+        """列出当前作用域下的文件"""
+        text = await self._command_service.run_file(
+            event, action="list", prefix=prefix
+        )
+        yield event.plain_result(text)
+
+    @nkit_file.command("save")
+    async def nkit_file_save(
+        self,
+        event: AstrMessageEvent,
+        key: str,
+        mode: str,
+        payload: GreedyStr,
+    ):
+        """保存或覆盖文件，mode 支持 path、text、base64"""
+        text = await self._command_service.run_file_save(event, key, mode, payload)
+        yield event.plain_result(text)
+
+    @nkit_file.command("get_path", alias={"path"})
+    async def nkit_file_get_path(self, event: AstrMessageEvent, key: str):
+        """获取已保存文件的本地路径"""
+        text = await self._command_service.run_file(
+            event, action="get_path", key=key
+        )
+        yield event.plain_result(text)
+
+    @nkit_file.command("get_url", alias={"url"})
+    async def nkit_file_get_url(self, event: AstrMessageEvent, key: str):
+        """获取已保存文件的临时下载 URL"""
+        text = await self._command_service.run_file(event, action="get_url", key=key)
+        yield event.plain_result(text)
+
+    @nkit_file.command("delete")
+    async def nkit_file_delete(self, event: AstrMessageEvent, key: str):
+        """删除已保存文件"""
+        text = await self._command_service.run_file(event, action="delete", key=key)
+        yield event.plain_result(text)
 
     async def terminate(self):
         if hasattr(self, "_kv_tool") and self._kv_tool:
