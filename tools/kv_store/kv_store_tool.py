@@ -95,6 +95,10 @@ class KVStoreTool(BaseTool):
                     "type": "string",
                     "description": "值（set 操作需要），任意字符串内容",
                 },
+                "prefix": {
+                    "type": "string",
+                    "description": "键名前缀（list 操作可选），用于只列出匹配前缀的键",
+                },
             },
             "required": ["action"],
         }
@@ -162,7 +166,7 @@ class KVStoreTool(BaseTool):
             return self._handle_delete(kwargs, namespace)
         elif action == "list":
             return self._handle_list(
-                namespace, ai_isolation, session_scope, ai_id, session_id
+                kwargs, namespace, ai_isolation, session_scope, ai_id, session_id
             )
         elif action == "search":
             return self._handle_search(kwargs, namespace)
@@ -229,22 +233,39 @@ class KVStoreTool(BaseTool):
 
     def _handle_list(
         self,
+        kwargs: Dict,
         namespace: Optional[str],
         ai_isolation: bool,
         session_scope: bool,
         ai_id: str,
         session_id: str,
     ) -> ToolResult:
+        prefix = str(kwargs.get("prefix") or "").strip()
         keys = self._storage.list_keys(namespace)
+        if prefix:
+            keys = [key for key in keys if str(key).startswith(prefix)]
         scope_desc = self._namespace_strategy.describe(
             ai_isolation, session_scope, ai_id, session_id
         )
 
         if not keys:
+            if prefix:
+                return ToolResult(
+                    success=True,
+                    message=f"{scope_desc} 没有匹配前缀 '{prefix}' 的键喵~ 📦",
+                    data={"keys": [], "prefix": prefix, "scope": scope_desc},
+                )
             return ToolResult(
                 success=True,
                 message=f"{scope_desc} 还没有存储任何数据喵~ 📦",
                 data={"keys": [], "scope": scope_desc},
+            )
+
+        if prefix:
+            return ToolResult(
+                success=True,
+                message=f"找到 {len(keys)} 个匹配前缀 '{prefix}' 的键喵~ 📋",
+                data={"keys": keys, "prefix": prefix, "scope": scope_desc},
             )
 
         return ToolResult(
