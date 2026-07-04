@@ -173,7 +173,14 @@ class FileStoreTool(BaseTool):
         if not path:
             return ToolResult(success=False, message=f"找不到文件 '{key}'")
         metadata = self._storage.get_metadata(key, namespace) or {"key": key}
-        temp_path = self._copy_to_temp(path, metadata)
+        try:
+            temp_path = self._copy_to_temp(path, metadata)
+        except (FileNotFoundError, OSError, ValueError) as e:
+            logger.warning(f"[FileStoreTool] 复制临时文件失败: {e}")
+            return ToolResult(
+                success=False,
+                message=f"无法获取文件 '{key}' 的临时路径，请稍后重试",
+            )
         metadata["path"] = temp_path
         return ToolResult(success=True, message="已获取文件路径", data=metadata)
 
